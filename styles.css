@@ -51,3 +51,5 @@
 .modal-container .modal.co-canvas-search{max-height:calc(100vh - 16px);max-width:calc(100vw - 16px);overflow:visible}.co-canvas-search .modal-content{overflow:auto;height:100%;margin:0;padding:16px}.co-canvas-search .co-search-results{max-height:none}.co-canvas-search label{cursor:pointer}
 
 .co-search-kind{font-size:11px;color:var(--text-accent);margin-bottom:4px}
+
+.co-window-pin{position:absolute;top:10px;left:12px;z-index:21;width:28px;height:28px;padding:5px;background:transparent;box-shadow:none;color:var(--text-muted)}.co-window-pin[aria-pressed=true]{color:var(--text-accent);background:var(--background-modifier-active-hover)}.co-window-pin svg{width:16px;height:16px}.co-remote .modal-content,.co-canvas-search .modal-content{padding-top:24px}
