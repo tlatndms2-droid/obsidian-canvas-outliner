@@ -1,0 +1,11 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {buildSync} from 'esbuild';
+import vm from 'node:vm';
+const code=buildSync({entryPoints:['src/presentation.ts'],bundle:true,platform:'node',format:'cjs',write:false,external:['obsidian']}).outputFiles[0].text;
+const module={exports:{}};vm.runInNewContext(code,{module,exports:module.exports,require:()=>({})});
+const make=()=>Object.create(module.exports.Presentation.prototype);
+test('Extended PT zoom keeps normal viewport filtering and restores native method',()=>{const p=make();const original=function(){return this.screenshotting?'all cards':'visible cards'};const c={screenshotting:false,virtualize:original};p.enableExtendedZoom(c);assert.equal(c.screenshotting,true);assert.equal(c.virtualize(),'visible cards');assert.equal(c.screenshotting,true);p.releaseExtendedZoom();assert.equal(c.virtualize,original);assert.equal(c.screenshotting,false)});
+test('Viewport filtering restores screenshot flag even after native failure',()=>{const p=make(),c={screenshotting:false,virtualize(){throw Error('native failure')}};p.enableExtendedZoom(c);assert.throws(()=>c.virtualize(),/native failure/);assert.equal(c.screenshotting,true);p.releaseExtendedZoom();assert.equal(c.screenshotting,false)});
+test('Existing screenshot operation is preserved',()=>{const p=make(),original=function(){return this.screenshotting},c={screenshotting:true,virtualize:original};p.enableExtendedZoom(c);assert.equal(c.virtualize,original);assert.equal(c.virtualize(),true);p.releaseExtendedZoom();assert.equal(c.screenshotting,true)});
+test('Changing Canvas restores previous zoom hooks',()=>{const p=make(),original=function(){},a={screenshotting:false,virtualize:original},b={screenshotting:false,virtualize:original};p.enableExtendedZoom(a);p.enableExtendedZoom(b);assert.equal(a.virtualize,original);assert.equal(a.screenshotting,false);p.releaseExtendedZoom();assert.equal(b.virtualize,original)});
