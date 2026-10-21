@@ -30,9 +30,20 @@ export class AreaSelection {
  private lastAreas:Area[]|null=null;
  private painted:{ids:Set<string>;enabled:boolean;layer:HTMLElement|null;toolbar:HTMLElement|null;first:Element|null}|null=null;
  cleanup:((cancel?:boolean)=>void)|null=null;
+ private nativeCanvas:any=null;
+ private restoreNative:(()=>void)|null=null;
+ private normalInitial=new Set<string>();
  constructor(readonly pt:Presentation){
   const p=pt.p;
   p.registerDomEvent(document,'pointerdown',e=>this.down(e),true);
+  p.registerDomEvent(document,'pointerdown',e=>{
+   if(this.enabled||e.button!==0||!p.adapter.element()?.contains(e.target as Node)||this.control(e.target))return;
+   this.normalInitial=new Set(this.ids);
+   if(!e.shiftKey&&!e.altKey){this.ids=new Set();this.paint();}
+  },true);
+  p.registerDomEvent(window,'keydown',e=>{
+   if(!this.enabled&&e.key==='Escape'&&p.adapter.element()?.contains(e.target as Node)&&!pt.inputFocused(e)){this.ids=new Set();this.paint();}
+  },true);
   for(const type of ['click','dblclick','contextmenu','paste','cut','beforeinput','drop'] as const)p.registerDomEvent(document,type,e=>{
    if(this.enabled&&p.adapter.element()?.contains(e.target as Node)&&!this.control(e.target)){
     e.preventDefault();e.stopImmediatePropagation();
@@ -53,7 +64,27 @@ export class AreaSelection {
     this.paint();
    }else if(!['p','v','o','f','1','!','+','-','=','0',' ','Shift','Control','Alt','Meta','Home','End','PageUp','PageDown'].includes(e.key.toLowerCase())&&!['Shift','Control','Alt','Meta','Home','End','PageUp','PageDown'].includes(e.key)){e.preventDefault();e.stopImmediatePropagation();}
   },true);
-  p.register(()=>{this.cleanup?.(true);this.toolbar?.remove();});
+  p.register(()=>{this.cleanup?.(true);this.toolbar?.remove();this.restoreNative?.();});
+ }
+ /** Extend the native marquee only; panning and node dragging never enter this path. */
+ syncNative(){
+  const c=this.pt.p.adapter.canvas;if(c===this.nativeCanvas)return;
+  this.restoreNative?.();this.restoreNative=null;this.nativeCanvas=c;
+  if(!c?.handleDragToSelect||!c.handleDragWithPan)return;
+  const original=c.handleDragToSelect,owner=this;
+  const wrapped=function(this:any,e:PointerEvent,...args:any[]){
+   const p=owner.pt.p;
+   if(owner.enabled||p.state()?.presentation||!p.store.settings.vision||e.ctrlKey||e.metaKey)return original.call(this,e,...args);
+   const start=this.posFromEvt(e),initial=new Set(owner.normalInitial),areas=p.state()?.areas??[],path=p.adapter.file?.path;
+   const mode=e.altKey?'subtract':e.shiftKey?'add':'replace';
+   const drag=this.handleDragWithPan;
+   this.handleDragWithPan=function(event:PointerEvent,handlers:any){
+    const update=(ev:PointerEvent)=>{if(path!==p.adapter.file?.path||owner.enabled||p.state()?.presentation||!p.store.settings.vision)return;const end=c.posFromEvt(ev);owner.ids=marqueeSelection(areas,{x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y)},initial,mode);owner.paint();};
+    return drag.call(this,event,{...handlers,move:(ev:PointerEvent)=>{handlers.move?.(ev);update(ev);},end:(ev:PointerEvent)=>{handlers.move?.(ev);handlers.end?.(ev);if(ev.ctrlKey||ev.metaKey)owner.ids=initial;else update(ev);owner.paint();},cancel:(...a:any[])=>{handlers.cancel?.(...a);owner.ids=path===p.adapter.file?.path?initial:new Set();owner.paint();}});
+   };
+   try{return original.call(this,e,...args);}finally{this.handleDragWithPan=drag;}
+  };
+  c.handleDragToSelect=wrapped;this.restoreNative=()=>{if(c.handleDragToSelect===wrapped)c.handleDragToSelect=original;};
  }
  control(target:EventTarget|null){return (target as HTMLElement)?.closest?.('.canvas-controls,.canvas-card-menu,.co-area-selection-tools,.co-presentation-chrome,input,textarea,select,[contenteditable=true],.cm-editor');}
  toggle(){this.set(!this.enabled);}
@@ -64,6 +95,7 @@ export class AreaSelection {
   this.pt.lastKey='';p.renderAll();p.adapter.element()?.focus();
  }
  sync(){
+  this.syncNative();
   const p=this.pt.p,wrapper=p.adapter.element(),path=p.adapter.file?.path??'',s=p.state();
   if(path!==this.path||s?.presentation||!p.store.settings.vision){this.cleanup?.(true);this.enabled=false;this.ids.clear();this.path=path;}
   if(s?.areas!==this.lastAreas){this.lastAreas=s?.areas??null;const valid=new Set(s?.areas.map(a=>a.id));this.ids=new Set([...this.ids].filter(id=>valid.has(id)));}
@@ -76,7 +108,7 @@ export class AreaSelection {
   if(last&&last.ids===this.ids&&last.enabled===this.enabled&&last.layer===this.pt.layer&&last.toolbar===this.toolbar&&last.first===(this.pt.layer?.firstElementChild??null))return;
   this.painted={ids:this.ids,enabled:this.enabled,layer:this.pt.layer,toolbar:this.toolbar,first:this.pt.layer?.firstElementChild??null};
   const wrapper=this.pt.p.adapter.element();wrapper?.classList.toggle('co-area-selection-mode',this.enabled);
-  wrapper?.querySelectorAll<HTMLElement>('.co-pt-area[data-area]').forEach(el=>el.classList.toggle('co-multi-selected',this.enabled&&this.ids.has(el.dataset.area!)));
+  wrapper?.querySelectorAll<HTMLElement>('.co-pt-area[data-area]').forEach(el=>el.classList.toggle('co-multi-selected',this.ids.has(el.dataset.area!)));
   const button=this.toolbar?.querySelector('button');if(button){button.textContent='PT 그룹만 선택 '+(this.enabled?'ON':'OFF');button.setAttribute('aria-pressed',String(this.enabled));button.setAttribute('aria-label','PT 그룹만 선택');}
   const count=this.toolbar?.querySelector('.co-area-selection-count');if(count)count.textContent=this.enabled?`${this.ids.size}개 선택 · Shift 추가 · Alt 빼기`:'';
   document.querySelectorAll('.co-remote-area-select').forEach(el=>{el.textContent='PT 그룹만 선택 '+(this.enabled?'ON':'OFF');el.setAttribute('aria-pressed',String(this.enabled));});
