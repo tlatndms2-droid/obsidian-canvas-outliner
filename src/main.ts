@@ -2,6 +2,8 @@ import {Plugin,ItemView,WorkspaceLeaf,Menu,Modal,Setting,PluginSettingTab,TFile,
 import {CanvasIdentity,markerId} from './identity';
 import {observeCopies} from './copy';
 import {CanvasAdapter} from './adapter';
+import {SettingsFile} from './storage';
+import {join} from 'path';
 import {Presentation} from './presentation';
 import {CanvasSearch} from './search';
 import {Store,CanvasState,CanvasDocument,CanvasNode,Collection,Settings,Ref,emptyStore,emptyCanvas,defaultSettings,clone,uid,sync,purgeMissing,hierarchy,sorted,nodeName,register,unregister,addRef,moveCollection,deleteCollection,documentKey,SortMode,normalizeCollectionRefs,placeCollection,collectionCounts,matchesSearch} from './model';
@@ -34,6 +36,7 @@ export default class CanvasOutliner extends Plugin {
  presentation!:Presentation;
  copyPending=new Set<string>();
  identity!:CanvasIdentity;identityReady=false;identityStopped=false;identityBootstrap:Promise<void>=Promise.resolve();identityErrors=new Map<string,string>();identityRetryAt=0;
+ settingsFile!:SettingsFile;saveFailureNotified=false;
  searches=new Set<CanvasSearch>();saveScheduled=false;iconSignature='';scheduledSave:Promise<void>|null=null;
  openCanvasPaths=new Set<string>();closedReads=new Map<string,Promise<void>>();
  fileSignatures=new Map<string,string>();
@@ -50,7 +53,7 @@ export default class CanvasOutliner extends Plugin {
  prompt(title:string,value:string,done:(v:string)=>void){new Prompt(this.app,title,value,done).open();}
  confirm(message:string,done:()=>void){new Confirm(this.app,message,done).open();}
  outlinerDrag:any=null;store:Store=emptyStore();adapter!:CanvasAdapter;remotes=new Set<Remote>();busy=false;timer:number=0;saveTimer:number=0;lastSelection='';lastDoc='';knownPath='';history=new Map<string,CanvasState[]>();future=new Map<string,CanvasState[]>();icons=new Set<HTMLElement>();saveQueue=Promise.resolve();corrupt=false;
- async onload(){this.registerDomEvent(document,'pointermove',e=>{this.pointer={x:e.clientX,y:e.clientY};});try{const loaded=await this.loadData();if(loaded){if(loaded.version!==1)throw Error('지원하지 않는 설정 형식');this.store={...emptyStore(),...loaded,settings:{...defaultSettings,...loaded.settings}};for(const s of Object.values(this.store.canvases)){purgeMissing(s);}}}catch(e){this.corrupt=true;new Notice('Canvas Outliner 설정을 읽지 못했습니다. 기존 설정을 덮어쓰지 않습니다.');console.error(e)}
+ async onload(){this.registerDomEvent(document,'pointermove',e=>{this.pointer={x:e.clientX,y:e.clientY};});try{this.settingsFile=new SettingsFile(join((this.app.vault.adapter as any).getBasePath(),this.manifest.dir!));const recovered=await this.settingsFile.load();const loaded=recovered.data;if(recovered.recovered)new Notice('Canvas Outliner 설정을 정상 백업에서 복구했습니다. 기존 파일은 별도로 보존했습니다.');if(loaded){if(loaded.version!==1)throw Error('지원하지 않는 설정 형식');this.store={...emptyStore(),...loaded,settings:{...defaultSettings,...loaded.settings}};for(const s of Object.values(this.store.canvases)){purgeMissing(s);}}}catch(e){this.corrupt=true;new Notice('Canvas Outliner 설정을 읽지 못했습니다. 기존 설정을 덮어쓰지 않습니다.');console.error(e)}
  if(!this.store.settings.customOnly){for(const state of Object.values(this.store.canvases)){state.collections.sort((a,b)=>a.name.localeCompare(b.name));if(state.snapshot){const groups=hierarchy(state.snapshot,state).parents;for(const parent of ['root',...state.snapshot.nodes.filter(n=>n.type==='group').map(n=>n.id),...state.collections.map(c=>c.id)]){const c=state.collections.find(c=>c.id===parent);const nodes=state.snapshot.nodes.filter(n=>c?c.refs.some(r=>r.id===n.id):(groups.get(n.id)??'root')===parent);state.custom[parent]=sorted(nodes,state,this.store.settings,parent).map(n=>n.id);}}}this.store.settings.customOnly=true;}this.store.settings.sort='custom';this.store.settings.descending=false;
  this.adapter=new CanvasAdapter(this.app);this.openCanvasPaths=this.canvasPaths();this.presentation=new Presentation(this);this.registerView(VIEW,l=>new OutlinerView(l,this));this.addSettingTab(new OutlinerSettings(this));
  this.identity=new CanvasIdentity({store:()=>this.store,read:async path=>{const f=this.app.vault.getAbstractFileByPath(path);if(!(f instanceof TFile))throw Error('Canvas missing: '+path);return JSON.parse(await this.app.vault.read(f));},write:(path,previous,id)=>this.writeIdentity(path,previous,id),save:()=>this.save()});
@@ -94,7 +97,12 @@ export default class CanvasOutliner extends Plugin {
  async prepareIdentities(){if(this.corrupt)return;
   // First assign known configurations, then resolve copies made while Obsidian was closed.
   const paths=[...new Set([...Object.keys(this.store.identityTransfers??{}),...Object.keys(this.store.canvases),...this.app.vault.getFiles().filter(f=>f.extension==='canvas').map(f=>f.path)])];
-  for(const path of paths){if(this.identityStopped)return;if(!(this.app.vault.getAbstractFileByPath(path) instanceof TFile))continue;try{await this.identity.ensure(path);this.identityErrors.delete(path);}catch(error){this.identityFailure(path,error);}}
+  for(const path of paths){if(this.identityStopped)return;const candidate=this.app.vault.getAbstractFileByPath(path);if(!(candidate instanceof TFile)||candidate.extension!=='canvas')continue;try{
+   // Unopened, unrelated canvases have no configuration to recover. Import only
+   // known files, pending transfers, or marked copies; activate new files on open.
+   if(!this.store.canvases[path]&&!this.store.identityTransfers?.[path]&&!markerId(JSON.parse(await this.app.vault.read(candidate))))continue;
+   await this.identity.ensure(path);this.identityErrors.delete(path);
+  }catch(error){this.identityFailure(path,error);}}
   this.identityReady=true;
  }
  async writeIdentity(path:string,previous:string|null,id:string):Promise<CanvasDocument>{
@@ -111,13 +119,9 @@ export default class CanvasOutliner extends Plugin {
  const s=this.store.canvases[path]??(this.store.canvases[path]=emptyCanvas());const key=JSON.stringify(doc);const selection=JSON.stringify(this.adapter.selection());if(selection!==this.lastSelection&&this.adapter.selection().length===1)this.presentation.selectTarget('node',this.adapter.selection()[0]);if(key!==this.lastDoc){sync(s,doc);for(const node of doc.nodes){if(node.file&&this.fileSignatures.has(node.file)&&!s.meta[node.id].fileSignature)s.meta[node.id].fileSignature=this.fileSignatures.get(node.file);if(node.file&&!this.fileSignatures.has(node.file)){const f=this.app.vault.getAbstractFileByPath(node.file);if(f instanceof TFile)void this.fileChanged(f,true).catch(console.error);}}this.lastDoc=key;this.presentation.lastKey='';for(const search of this.searches)search.schedule();this.save();this.renderAll();}else if(selection!==this.lastSelection)this.renderAll();this.lastSelection=selection;this.renderIcons(doc,s);
  }finally{this.busy=false}}
  save():Promise<void>{if(this.corrupt){const rejected=Promise.reject<void>(Error('설정이 손상되어 저장하지 않습니다.'));void rejected.catch(()=>{});return rejected;}if(this.scheduledSave)return this.scheduledSave;
-  const snapshot=Promise.resolve().then(()=>{this.scheduledSave=null;return clone(this.store);});
-  const operation=this.saveQueue.catch(()=>{}).then(async()=>{const data=await snapshot,adapter=this.app.vault.adapter,dir=this.manifest.dir;if(!dir)throw Error('Plugin folder unavailable');const target=dir+'/data.json';
-   if(await adapter.exists(target)){const previous=await adapter.read(target);if(JSON.parse(previous).version!==1)throw Error('Existing settings invalid');await adapter.write(dir+'/data.backup.json',previous);}
-   await this.saveData(data);
-   // Obsidian writeJson may absorb a write error. Read back before declaring success.
-   if(JSON.stringify(JSON.parse(await adapter.read(target)))!==JSON.stringify(data))throw Error('저장 결과가 요청한 설정과 일치하지 않습니다.');
-  });this.saveQueue=operation;this.scheduledSave=operation;void operation.catch(e=>{console.error(e);new Notice('Canvas Outliner 저장 실패: 이전 설정 백업을 보존했습니다.');});return operation;
+  // Keep at most one pending save. Snapshot only when its turn starts, so slow
+  // storage cannot accumulate many full copies of a large configuration in RAM.
+  const operation=this.saveQueue.catch(()=>{}).then(async()=>{this.scheduledSave=null;await this.settingsFile.save(clone(this.store));this.saveFailureNotified=false;});this.saveQueue=operation;this.scheduledSave=operation;void operation.catch(e=>{console.error(e);if(!this.saveFailureNotified){this.saveFailureNotified=true;new Notice('Canvas Outliner 저장 실패: 기존 설정과 백업을 보존했습니다.');}});return operation;
  }
  change(fn:(s:CanvasState)=>void){const s=this.state(),path=this.adapter.file?.path;if(!s||!path)return;const history=this.history.get(path)??[];history.push(clone(s));if(history.length>60)history.shift();this.history.set(path,history);try{fn(s);const doc=this.document();if(doc)normalizeCollectionRefs(s,doc);}catch(e){Object.assign(s,history.pop());new Notice(String(e));return;}this.future.set(path,[]);this.save();this.renderAll();}
  undo(redo=false){const path=this.adapter.file?.path,s=this.state();if(!path||!s)return;const source=(redo?this.future:this.history).get(path)??[],dest=(redo?this.history:this.future).get(path)??[];const previous=source.pop();if(!previous)return;dest.push(clone(s));const snap=s.snapshot;s.snapshot=previous.snapshot;Object.assign(s,previous);s.snapshot=snap;const doc=this.document();if(doc)normalizeCollectionRefs(s,doc);(redo?this.future:this.history).set(path,source);(redo?this.history:this.future).set(path,dest);this.save();this.renderAll();}
