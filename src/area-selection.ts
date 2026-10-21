@@ -2,6 +2,21 @@ import type {Presentation} from './presentation';
 import type {Area} from './model';
 
 export type Rect={x:number;y:number;width:number;height:number};
+export function resizeArea(origin:Rect,direction:string,dx:number,dy:number):Rect {
+ let left=origin.x,right=origin.x+origin.width,top=origin.y,bottom=origin.y+origin.height;
+ if(direction.includes('e'))right=Math.max(left+40,right+dx);
+ if(direction.includes('w'))left=Math.min(right-40,left+dx);
+ if(direction.includes('s'))bottom=Math.max(top+40,bottom+dy);
+ if(direction.includes('n'))top=Math.min(bottom-40,top+dy);
+ return {x:left,y:top,width:right-left,height:bottom-top};
+}
+export function numberedAreaName(names:string[],requested='Presentation Group') {
+ const text=requested.trim()||'Presentation Group',base=text.replace(/\d+$/,'').trim()||'Presentation Group';
+ const used=new Set(names);let n=1;
+ while(used.has(base+n))n++;
+ if(/\d+$/.test(text)&&!used.has(text))return text;
+ return base+n;
+}
 export function marqueeSelection(areas:Area[],box:Rect,initial:Set<string>,mode:'replace'|'add'|'subtract') {
  const hits=areas.filter(a=>a.x<=box.x+box.width&&a.x+a.width>=box.x&&a.y<=box.y+box.height&&a.y+a.height>=box.y).map(a=>a.id);
  const result=new Set(mode==='replace'?[]:initial);
@@ -72,11 +87,13 @@ export class AreaSelection {
   e.preventDefault();e.stopImmediatePropagation();this.cleanup?.(true);this.pt.cancel();wrapper.focus();p.adapter.canvas.deselectAll?.();
   const start=p.adapter.toCanvas(e);if(!start)return;
   const path=p.adapter.file?.path,initial=new Set(this.ids),areas=s.areas.map(a=>({...a}));
-  const label=(e.target as HTMLElement).closest('.co-pt-label')?.closest<HTMLElement>('[data-area]');
+  const handle=(e.target as HTMLElement).closest<HTMLElement>('.co-pt-resize,.co-area-handle');
+  const label=(handle??(e.target as HTMLElement).closest('.co-pt-label'))?.closest<HTMLElement>('[data-area]');
   const hit=label?areas.find(a=>a.id===label.dataset.area):areas.filter(a=>start.x>=a.x&&start.x<=a.x+a.width&&start.y>=a.y&&start.y<=a.y+a.height).sort((a,b)=>a.width*a.height-b.width*b.height)[0];
   const mode=e.altKey?'subtract':e.shiftKey?'add':'replace';
-  const moving=!!label&&!!hit&&mode==='replace';
-  if(moving&&!this.ids.has(hit!.id))this.ids=new Set([hit!.id]);
+  const resizing=!!handle&&!!hit&&mode==='replace',moving=!resizing&&!!label&&!!hit&&mode==='replace';
+  if((moving||resizing)&&!this.ids.has(hit!.id))this.ids=new Set([hit!.id]);
+  let resized:Rect|null=null;
   const moveIds=new Set(this.ids);let moved=false,dx=0,dy=0;
   const ghost=wrapper.createDiv({cls:'co-area-selection-box'+(mode==='subtract'?' is-subtract':'')});ghost.style.display='none';
   this.pt.editing=true;wrapper.setPointerCapture(e.pointerId);
@@ -86,7 +103,8 @@ export class AreaSelection {
    if(path!==p.adapter.file?.path){finish(true);return;}
    if(!moved&&Math.hypot(ev.clientX-e.clientX,ev.clientY-e.clientY)<4)return;moved=true;
    const end=p.adapter.toCanvas(ev);if(!end)return;dx=Math.round(end.x-start.x);dy=Math.round(end.y-start.y);
-   if(moving){const zoom=2**p.adapter.canvas.zoom;wrapper.querySelectorAll<HTMLElement>('.co-pt-area[data-area]').forEach(el=>{if(moveIds.has(el.dataset.area!))el.style.transform=`translate(${dx*zoom}px,${dy*zoom}px)`;});}
+   if(resizing){resized=resizeArea(hit!,handle!.dataset.direction!,dx,dy);const b=p.adapter.canvas.getViewportBBox(),z=2**p.adapter.canvas.zoom;const el=handle!.closest<HTMLElement>('[data-area]')!;Object.assign(el.style,{left:(resized.x-b.minX)*z+'px',top:(resized.y-b.minY)*z+'px',width:resized.width*z+'px',height:resized.height*z+'px'});}
+   else if(moving){const zoom=2**p.adapter.canvas.zoom;wrapper.querySelectorAll<HTMLElement>('.co-pt-area[data-area]').forEach(el=>{if(moveIds.has(el.dataset.area!))el.style.transform=`translate(${dx*zoom}px,${dy*zoom}px)`;});}
    else {const r=wrapper.getBoundingClientRect();Object.assign(ghost.style,{display:'block',left:Math.min(e.clientX,ev.clientX)-r.left+'px',top:Math.min(e.clientY,ev.clientY)-r.top+'px',width:Math.abs(ev.clientX-e.clientX)+'px',height:Math.abs(ev.clientY-e.clientY)+'px'});this.ids=marqueeSelection(areas,{x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y)},initial,mode);}
    this.paint();
   };
@@ -96,6 +114,7 @@ export class AreaSelection {
    if(wrapper.hasPointerCapture(e.pointerId))wrapper.releasePointerCapture(e.pointerId);
    ghost.remove();wrapper.querySelectorAll<HTMLElement>('.co-pt-area').forEach(el=>el.style.transform='');this.cleanup=null;this.pt.editing=false;
    if(cancel||path!==p.adapter.file?.path)this.ids=initial;
+   else if(moved&&resizing&&resized)p.change(state=>{const a=state.areas.find(a=>a.id===hit!.id);if(a)Object.assign(a,resized);});
    else if(moved&&moving&&(dx||dy))p.change(state=>{for(const a of state.areas){const origin=areas.find(x=>x.id===a.id);if(origin&&moveIds.has(a.id)){a.x=origin.x+dx;a.y=origin.y+dy;}}});
    else if(!moved){this.ids=new Set(mode==='replace'?[]:initial);if(hit){if(mode==='subtract'||(mode==='add'&&initial.has(hit.id)))this.ids.delete(hit.id);else this.ids.add(hit.id);}}
    this.pt.lastKey='';this.pt.render();this.paint();

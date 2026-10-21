@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 const bundle=await build({entryPoints:['src/area-selection.ts'],bundle:true,write:false,format:'esm',platform:'node'});
-const {marqueeSelection}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+const {marqueeSelection,resizeArea,numberedAreaName}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const areas=[{id:'outer',x:0,y:0,width:300,height:300},{id:'inner',x:100,y:100,width:50,height:50},{id:'other',x:400,y:0,width:100,height:100}];
 test('partial overlap includes enclosing and nested PT areas',()=>{
  assert.deepEqual([...marqueeSelection(areas,{x:125,y:125,width:10,height:10},new Set(),'replace')],['outer','inner']);
@@ -18,3 +18,6 @@ test('empty replace clears while empty subtract preserves',()=>{
  assert.equal(marqueeSelection(areas,box,initial,'replace').size,0);
  assert.deepEqual([...marqueeSelection(areas,box,initial,'subtract')],['inner']);
 });
+
+test('resize keeps opposite corner and clamps minimum size',()=>{const r={x:10,y:20,width:100,height:80};assert.deepEqual(resizeArea(r,'nw',200,200),{x:70,y:60,width:40,height:40});assert.deepEqual(resizeArea(r,'se',30,40),{x:10,y:20,width:130,height:120});assert.equal(r.width,100)});
+test('numbered names avoid duplicates and preserve an available requested suffix',()=>{assert.equal(numberedAreaName([]),'Presentation Group1');assert.equal(numberedAreaName(['Presentation Group1']),'Presentation Group2');assert.equal(numberedAreaName(['Presentation Group1','Presentation Group2'],'Presentation Group1'),'Presentation Group3');assert.equal(numberedAreaName(['Custom1'],'Custom'),'Custom2');});
