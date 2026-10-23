@@ -4,7 +4,7 @@ const old={version:1,canvases:{},settings:{label:'preserve'}},next={...old,setti
 async function fixture(t){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'outliner-storage-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));return dir;}
 test('truncated current recovers full backup and preserves corrupt bytes',async t=>{const dir=await fixture(t),raw='{"version":1,"canvases":';await fs.writeFile(path.join(dir,'data.json'),raw);await fs.writeFile(path.join(dir,'data.backup.json'),JSON.stringify(old));const r=await new SettingsFile(dir).load();assert.equal(r.recovered,true);assert.deepEqual(r.data,old);const bad=(await fs.readdir(dir)).find(x=>x.startsWith('data.corrupt-'));assert.equal(await fs.readFile(path.join(dir,bad),'utf8'),raw);assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.json'))),old);});
 test('partial temporary write cannot damage current or backup',async t=>{const dir=await fixture(t);await new SettingsFile(dir).save(old);const io={...fs,writeFile:async(p,raw,enc)=>fs.writeFile(p,String(raw).slice(0,9),enc)};await assert.rejects(new SettingsFile(dir,io).save(next));assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.json'))),old);});
-test('failed replacement keeps current intact; retry saves and keeps backup',async t=>{const dir=await fixture(t);await new SettingsFile(dir).save(old);const io={...fs,rename:async(a,b)=>{if(b.endsWith('/data.json')||b.endsWith('\\data.json'))throw Error('injected rename failure');return fs.rename(a,b)}};await assert.rejects(new SettingsFile(dir,io).save(next));assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.json'))),old);await new SettingsFile(dir).save(next);assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.json'))),next);assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.backup.json'))),old);});
+test('failed replacement keeps current intact; retry saves without creating a backup',async t=>{const dir=await fixture(t);await new SettingsFile(dir).save(old);const io={...fs,rename:async(a,b)=>{if(b.endsWith('/data.json')||b.endsWith('\\data.json'))throw Error('injected rename failure');return fs.rename(a,b)}};await assert.rejects(new SettingsFile(dir,io).save(next));assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.json'))),old);await new SettingsFile(dir).save(next);assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.json'))),next);await assert.rejects(fs.readFile(path.join(dir,'data.backup.json')),/ENOENT/);});
 test('two invalid copies are preserved and load fails closed',async t=>{const dir=await fixture(t);for(const f of ['data.json','data.backup.json'])await fs.writeFile(path.join(dir,f),'broken');await assert.rejects(new SettingsFile(dir).load());assert.equal(await fs.readFile(path.join(dir,'data.json'),'utf8'),'broken');});
 test('recovery preserves incomplete UTF-8 bytes exactly',async t=>{const dir=await fixture(t),bytes=Buffer.from([123,34,120,34,58,34,0xed,0x95]);await fs.writeFile(path.join(dir,'data.json'),bytes);await fs.writeFile(path.join(dir,'data.backup.json'),JSON.stringify(old));await new SettingsFile(dir).load();const bad=(await fs.readdir(dir)).find(x=>x.startsWith('data.corrupt-'));assert.deepEqual(await fs.readFile(path.join(dir,bad)),bytes);});
 test('Unchanged save writes nothing and unchanged validated JSON is not parsed again',async t=>{
@@ -38,15 +38,15 @@ test('Replacement during temporary write is detected before overwriting current 
  const file=new SettingsFile(dir,io);await file.load();
  await assert.rejects(file.save(next),/changed externally during save/);
  assert.equal(await fs.readFile(path.join(dir,'data.json'),'utf8'),foreign);
- assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.backup.json'),'utf8')),old);
+ await assert.rejects(fs.readFile(path.join(dir,'data.backup.json')),/ENOENT/);
 });
-test('Failed cached save can retry without losing the previous good backup',async t=>{
+test('Failed cached save can retry without creating a backup',async t=>{
  const dir=await fixture(t);let fail=false;
  const io={...fs,rename:async(a,b)=>{if(fail&&b===path.join(dir,'data.json'))throw Error('fail');return fs.rename(a,b)}};
  const file=new SettingsFile(dir,io);await file.save(old);fail=true;
  await assert.rejects(file.save(next));fail=false;await file.save(next);
  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.json'),'utf8')),next);
- assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.backup.json'),'utf8')),old);
+ await assert.rejects(fs.readFile(path.join(dir,'data.backup.json')),/ENOENT/);
 });
 test('Invalid in-memory store cannot touch a valid file',async t=>{
  const dir=await fixture(t),file=new SettingsFile(dir);await file.save(old);
@@ -75,4 +75,19 @@ test('A custom serializer cannot replace the validated store structure',async t=
  await assert.rejects(file.save({...old,toJSON:()=>null}),/Custom settings serializers/);
  await assert.rejects(file.save({...old,settings:{toJSON:()=>false}}),/Custom settings serializers/);
  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir,'data.json'),'utf8')),old);
+});
+
+test('Changed saves write only the current file and leave a legacy backup untouched',async t=>{
+ const dir=await fixture(t),legacy=JSON.stringify({...old,settings:{label:'legacy backup'}});
+ await fs.writeFile(path.join(dir,'data.backup.json'),legacy);
+ const writes=[];const io={...fs,writeFile:async(p,...args)=>{writes.push(path.basename(p));return fs.writeFile(p,...args)}};
+ const file=new SettingsFile(dir,io);await file.save(old);await file.save(next);
+ assert.equal(writes.length,2);assert.ok(writes.every(name=>name.startsWith('data.json.')&&name.endsWith('.tmp')));
+ assert.equal(await fs.readFile(path.join(dir,'data.backup.json'),'utf8'),legacy);
+ const loaded=await new SettingsFile(dir).load();assert.equal(loaded.recovered,false);assert.deepEqual(loaded.data,next);
+});
+test('A fresh installation persists changed settings across reload without any backup',async t=>{
+ const dir=await fixture(t),file=new SettingsFile(dir);await file.load();await file.save(old);await file.save(next);
+ assert.deepEqual((await new SettingsFile(dir).load()).data,next);
+ assert.deepEqual(await fs.readdir(dir),['data.json']);
 });

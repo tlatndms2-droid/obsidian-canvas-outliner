@@ -40,7 +40,6 @@ export class SettingsFile {
   if(this.validRaw!==undefined&&previous!==this.validRaw){if(previous!==null)parseStore(previous);throw Error('Settings changed externally; reload before saving');}
   if(previous!==null&&this.validRaw===undefined){parseStore(previous);this.validRaw=previous;}
   if(previous===raw)return;
-  if(previous!==null)await this.replace('data.backup.json',previous);
   await this.replace('data.json',raw,previous);
   this.validRaw=raw;
  }
