@@ -23,3 +23,13 @@ test('Custom Collection placement reorders siblings and reparents without cycles
 
 test('Collection counts include nested Groups and Collections, registered Items once only',async()=>{const {collectionCounts}=await import('../.build/model.mjs');const s=emptyCanvas(),doc={edges:[],nodes:[n('a','group',0,0,600,400),n('b','group',300,20,250,300),n('1','text',40,40,100,100),n('2','text',340,60,100,100),n('u','text',340,180,100,100),n('3','text',800,0,100,100),n('4','text',1000,0,100,100)]};sync(s,doc);s.registered=['1','2','3','4'];s.collections=[{id:'ca',name:'A',parent:null,refs:[{kind:'node',id:'a'},{kind:'node',id:'3'},{kind:'node',id:'2'}]},{id:'cb',name:'B',parent:'ca',refs:[{kind:'node',id:'4'},{kind:'node',id:'missing'}]}];assert.deepEqual(collectionCounts(doc,s).get('ca'),{groups:2,items:4});assert.deepEqual(collectionCounts(doc,s).get('cb'),{groups:0,items:1});s.registered=['1','3','4'];assert.deepEqual(collectionCounts(doc,s).get('ca'),{groups:2,items:3});});
 test('All search preserves the three labelled result sets and heading level',()=>{const s=emptyCanvas(),doc={nodes:[n('a','text',0,0,10,10,{text:'# match\n## match\nmatch'})],edges:[]};sync(s,doc);const results=search(doc,s,'match',new Set(['Card']),'all',2,new Map());assert.deepEqual(results.map(r=>r.mode),['text','heading','line','line','line']);assert.equal(results.find(r=>r.mode==='heading').line,2);assert.deepEqual(search(doc,s,'absent',new Set(),'all',2,new Map()),[]);});
+test('Vision Group can belong to a Collection even inside a normal Canvas group',()=>{
+ const s=emptyCanvas(),doc={nodes:[n('g','group',0,0,800,800),n('vg','group',20,20,200,200),n('card','text',30,30,50,50)],edges:[]};
+ s.visionGroups=[{id:'vg',name:'VG',x:20,y:20,width:200,height:200,native:true}];
+ s.collections=[{id:'a',name:'A',parent:null,refs:[]},{id:'b',name:'B',parent:null,refs:[]}];
+ sync(s,doc);const before=clone(doc);
+ addRef(s,'a','vg');assert.equal(normalizeCollectionRefs(s,doc),false);
+ assert.deepEqual(s.collections[0].refs,[{kind:'node',id:'vg'}]);
+ addRef(s,'b','vg');assert.equal(s.collections[0].refs.length,0);
+ assert.deepEqual(s.collections[1].refs,[{kind:'node',id:'vg'}]);assert.deepEqual(doc,before);
+});

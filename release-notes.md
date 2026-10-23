@@ -1,7 +1,8 @@
-# Canvas Outliner 0.1.53
+# Canvas Outliner 0.1.54
 
-- Vision Group을 드래그할 때 내부 카드를 함께 이동시키던 동작을 수정했습니다. 이제 Vision Group 영역만 이동하고, 내부 카드와 연결은 제자리에 유지됩니다.
-- 일반 Canvas 그룹은 내부 카드와 함께 이동하는 기존 동작을 유지합니다.
-- 일반 그룹과 같은 색상, 점선 테두리, 즉시 생성, Outliner 단독 표시와 Vision ON/OFF는 유지됩니다.
+- Vision Group을 Outliner에서 드래그해 다른 그룹과 순서를 바꾸거나 Collection 안팎으로 옮길 수 있도록 수정했습니다.
+- Collection 간 이동, Collection 내부 정렬, Outliner Undo/Redo, Remote Outliner에서도 같은 동작을 지원합니다.
+- Vision Group은 계속 하위 카드 없는 단독 항목으로 표시합니다. Canvas에서 일반 그룹 안에 겹쳐 있어도 Outliner의 Collection 소속은 독립적으로 정할 수 있습니다.
+- 목록 정렬·Collection 소속 변경은 Canvas의 그룹·카드 위치와 연결을 바꾸지 않습니다.
 
-검증: 자동 테스트 54개 통과. 실제 Sandbox에서 Vision Group 드래그 전후의 모든 다른 카드·그룹·연결 보존, 일반 그룹 묶음 이동 유지, 되돌리기·다시 실행 확인. 같은 Sandbox 재시작 후 저장 내용 보존과 실제 독립 이동 확인.
+검증: 자동 테스트 55개 통과. 실제 Sandbox UI의 드래그 이벤트를 통한 정렬·Collection 이동·Undo/Redo·Remote 반영, Canvas 원본 보존 확인. 같은 Sandbox 재시작 후 정렬·소속 유지와 재조작 확인.

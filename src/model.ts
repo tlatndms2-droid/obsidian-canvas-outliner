@@ -27,7 +27,7 @@ export function purgeMissing(s:CanvasState){const ids=new Set(s.snapshot?.nodes.
 export function hierarchy(doc:CanvasDocument,s:CanvasState){
   const groups=doc.nodes.filter(n=>n.type==='group'&&!s.visionGroups?.some(a=>a.id===n.id));const parents=new Map<string,string|null>();
   const choose=(list:CanvasNode[])=>list.sort((a,b)=>area(a)-area(b)||(s.meta[b.id]?.order??0)-(s.meta[a.id]?.order??0))[0]?.id??null;
-  for(const n of doc.nodes){let candidates=groups.filter(g=>g.id!==n.id&&contains(g,n));if(n.type==='group')candidates=candidates.filter(g=>area(g)>area(n));parents.set(n.id,choose(candidates));}
+  for(const n of doc.nodes){if(s.visionGroups?.some(a=>a.id===n.id)){parents.set(n.id,null);continue;}let candidates=groups.filter(g=>g.id!==n.id&&contains(g,n));if(n.type==='group')candidates=candidates.filter(g=>area(g)>area(n));parents.set(n.id,choose(candidates));}
   const counts=new Map(groups.map(g=>[g.id,0]));
   for(const id of s.registered){if(!doc.nodes.some(x=>x.id===id&&x.type!=='group'))continue;let p=parents.get(id);const seen=new Set<string>();while(p&&!seen.has(p)){seen.add(p);counts.set(p,(counts.get(p)||0)+1);p=parents.get(p);}}
   return {parents,counts};
