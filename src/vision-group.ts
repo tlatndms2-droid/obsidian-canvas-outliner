@@ -1,4 +1,4 @@
-import {addIcon,Menu,Notice,setIcon} from 'obsidian';
+import {addIcon,Menu,setIcon} from 'obsidian';
 import type CanvasOutliner from './main';
 import {Area,uid,matchesSearch} from './model';
 
@@ -10,16 +10,15 @@ export function creationBounds(selected:Omit<Area,'id'|'name'>[],viewport:Omit<A
  return{x,y,width:Math.max(...selected.map(n=>n.x+n.width))-x,height:Math.max(...selected.map(n=>n.y+n.height))-y};
 }
 
-/** Independent metadata: never changes native Canvas nodes or their membership. */
+/** Native Canvas groups with an independent Outliner identity and visibility. */
 export class VisionGroups {
  private wrapper:HTMLElement|null=null;
- private layer:HTMLElement|null=null;
  private toolbar:HTMLElement|null=null;
  private restore:(()=>void)|null=null;
+ private nativeRestore:(()=>void)|null=null;
+ nativeActionPath='';
  private resize:ResizeObserver|null=null;
  private frame=0;
- private signature='';
- private cancelDrag:(()=>void)|null=null;
  private path='';
  constructor(private p:CanvasOutliner){
   addIcon(VISION_ICON,'<g transform="scale(4.1666667)" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+VISION_ICON_SVG+'</g>');
@@ -29,27 +28,49 @@ export class VisionGroups {
  }
  private available(){return !!this.p.adapter.canvas&&!!this.p.state()&&!this.p.state()?.presentation;}
  get visible(){return this.p.store.settings.vgVision!==false;}
- toggle(){this.p.store.settings.vgVision=!this.visible;void this.p.save();this.p.renderAll();}
+ toggle(){this.p.store.settings.vgVision=!this.visible;this.p.adapter.canvas?.updateSelection(()=>{});void this.p.save();this.p.renderAll();}
+ undoNative(redo=false){const c=this.p.adapter.canvas;if(this.nativeActionPath!==this.p.adapter.file?.path||!c)return false;c[redo?'redo':'undo']();void this.p.refresh();this.p.renderAll();return true;}
  createFromSelection(){const doc=this.p.document(),ids=new Set(this.p.adapter.selection());if(!doc)return;const rect=creationBounds(doc.nodes.filter(n=>ids.has(n.id)),this.p.adapter.bounds());if(rect)this.create(rect);}
  create(rect:Omit<Area,'id'|'name'>){
   if(!this.available()||![rect.x,rect.y,rect.width,rect.height].every(Number.isFinite)||rect.width<=0||rect.height<=0)return;
-  const path=this.p.adapter.file?.path;
-  const names=new Set((this.p.state()?.visionGroups??[]).map(a=>a.name));let n=1;while(names.has('Vision Group'+n))n++;
-  this.p.prompt('Vision Group 이름','Vision Group'+n,name=>{
-   if(this.p.adapter.file?.path!==path||!this.available()){new Notice('Canvas가 바뀌어 Vision Group 생성을 취소했습니다.');return;}
-   this.p.change(s=>{(s.visionGroups??=[]).push({...rect,id:uid(),name});});
-  });
+  const state=this.p.state()!,names=new Set((state.visionGroups??[]).map(a=>a.name));
+  let n=1;while(names.has('Vision Group'+n))n++;
+  const a={...rect,id:uid(),name:'Vision Group'+n,native:true};
+  (state.visionGroups??=[]).push(a);this.insertNative(a);
+  this.nativeActionPath=this.p.adapter.file!.path;
+  this.p.adapter.canvas.selectOnly(this.p.adapter.node(a.id));
+  void this.p.save();this.p.renderAll();
+ }
+ private insertNative(a:Area){
+  const c=this.p.adapter.canvas;
+  c.importData({nodes:[{id:a.id,type:'group',x:a.x,y:a.y,width:a.width,height:a.height,label:a.name}],edges:[]},false);
+  c.requestSave();
+ }
+ private syncNative(){
+  const state=this.p.state(),c=this.p.adapter.canvas;if(!state||!c)return;
+  let changed=false;
+  for(const a of state.visionGroups??[]){
+   if(!a.native){a.native=true;this.insertNative(a);changed=true;}
+   const node=c.nodes.get(a.id);if(!node)continue;
+   const d=node.getData();
+   if(a.x!==d.x||a.y!==d.y||a.width!==d.width||a.height!==d.height||a.name!==d.label){
+    Object.assign(a,{x:d.x,y:d.y,width:d.width,height:d.height,name:d.label});changed=true;
+   }
+   node.nodeEl?.classList.add('co-vg-native');
+   node.nodeEl?.classList.toggle('co-vg-hidden',!this.visible);
+  }
+  if(changed)void this.p.save();
  }
  renderRows(el:HTMLElement,groups:Area[],query:string){
   let count=0;
-  for(const a of groups.filter(a=>!query||matchesSearch(a.name,query))){
+  for(const a of groups.filter(a=>this.p.adapter.node(a.id)&&(!query||matchesSearch(a.name,query)))){
    count++;const row=el.createDiv({cls:'co-row co-vision-group-row',attr:{'data-vision-group':a.id}});row.tabIndex=0;
    setIcon(row.createSpan({cls:'co-node-icon'}),VISION_ICON);row.createSpan({cls:'co-label',text:a.name});
-   row.onclick=()=>this.p.adapter.fit(a,this.p.store.settings.fitPadding,0);
+   row.onclick=()=>this.p.adapter.select(a.id,this.p.store.settings.fitPadding);
    row.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();row.click();}};
    row.oncontextmenu=e=>{e.preventDefault();e.stopPropagation();const path=this.p.adapter.file?.path,m=new Menu();
-    m.addItem(i=>i.setTitle('Vision Group 이름 변경').setIcon('pencil').onClick(()=>this.p.prompt('Vision Group 이름',a.name,name=>{if(this.p.adapter.file?.path===path)this.p.change(s=>{const target=s.visionGroups?.find(x=>x.id===a.id);if(target)target.name=name;});})));
-    m.addItem(i=>i.setTitle('Vision Group 삭제').setIcon('trash').onClick(()=>{if(this.p.adapter.file?.path===path)this.p.change(s=>{s.visionGroups=(s.visionGroups??[]).filter(x=>x.id!==a.id);});}));m.showAtMouseEvent(e);
+    m.addItem(i=>i.setTitle('Vision Group 이름 변경').setIcon('pencil').onClick(()=>this.p.prompt('Vision Group 이름',a.name,name=>{if(this.p.adapter.file?.path===path){const node=this.p.adapter.node(a.id);if(node){node.setLabel(name);this.p.adapter.canvas.requestSave();this.nativeActionPath=path!;void this.p.refresh();this.p.renderAll();}}})));
+    m.addItem(i=>i.setTitle('Vision Group 삭제').setIcon('trash').onClick(()=>{if(this.p.adapter.file?.path===path){const c=this.p.adapter.canvas,node=this.p.adapter.node(a.id);if(node){c.removeNode(node);c.requestSave();this.nativeActionPath=path!;void this.p.refresh();this.p.renderAll();}}}));m.showAtMouseEvent(e);
    };
   }return count;
  }
@@ -58,33 +79,22 @@ export class VisionGroups {
   if(wrapper!==this.wrapper||path!==this.path){this.detach();this.path=path;this.wrapper=wrapper;if(wrapper)this.attach(wrapper);}
   if(!wrapper)return;
   if(this.toolbar){this.toolbar.setAttribute('aria-pressed',String(this.visible));this.toolbar.classList.toggle('is-active',this.visible);setIcon(this.toolbar,this.visible?'eye':'eye-off');}
-  const groups=this.p.state()?.visionGroups??[],key=JSON.stringify([groups,this.visible]);
-  if(key===this.signature&&this.layer?.isConnected)return;
-  this.signature=key;this.layer?.remove();this.layer=null;
-  if(!this.visible||!groups.length)return;
-  this.layer=wrapper.createDiv({cls:'co-vg-layer'});
-  for(const a of groups){const box=this.layer.createDiv({cls:'co-vg-area',attr:{'data-vg-area':a.id}});box.createSpan({cls:'co-vg-name',text:a.name});}
-  this.project();
+  this.syncNative();
  }
  private schedule=()=>{if(!this.frame)this.frame=requestAnimationFrame(()=>{this.frame=0;this.project();});};
- private project(){const c=this.p.adapter.canvas,b=c?.getViewportBBox?.();if(!b||!this.layer)return;const z=2**c.zoom;for(const a of this.p.state()?.visionGroups??[]){const box=this.layer.querySelector<HTMLElement>('[data-vg-area="'+CSS.escape(a.id)+'"]');if(box)Object.assign(box.style,{left:(a.x-b.minX)*z+'px',top:(a.y-b.minY)*z+'px',width:a.width*z+'px',height:a.height*z+'px'});}}
+ private project(){this.syncNative();}
  private attach(wrapper:HTMLElement){
+  const c=this.p.adapter.canvas,owner=this,update=c.updateSelection,hit=c.hitTestNode,intersect=c.getIntersectingNodes;
+  const hidden=(node:any)=>!owner.visible&&owner.p.state()?.visionGroups?.some(a=>a.id===node.id);
+  const selection=function(this:any,fn:()=>void){return update.call(this,()=>{fn();for(const n of this.selection)if(hidden(n))this.selection.delete(n);});};
+  const intersections=function(this:any,...args:any[]){return intersect.apply(this,args).filter((n:any)=>!hidden(n));};
+  const hitTest=function(this:any,pos:{x:number;y:number},padding=0){const n=hit.call(this,pos,padding);if(!n||!hidden(n))return n;return intersections.call(this,{minX:pos.x-padding,minY:pos.y-padding,maxX:pos.x+padding,maxY:pos.y+padding}).sort((a:any,b:any)=>b.zIndex-a.zIndex)[0]??null;};
+  c.updateSelection=selection;c.getIntersectingNodes=intersections;c.hitTestNode=hitTest;
+  this.nativeRestore=()=>{if(c.updateSelection===selection)c.updateSelection=update;if(c.getIntersectingNodes===intersections)c.getIntersectingNodes=intersect;if(c.hitTestNode===hitTest)c.hitTestNode=hit;};
   const group=wrapper.querySelector('.canvas-controls');if(group){this.toolbar=group.createEl('button',{cls:'canvas-control-item co-vg-toggle',attr:{'aria-label':'Vision Group 표시 전환','data-tooltip-position':'left'}});this.toolbar.onclick=()=>this.toggle();}
   const canvas=wrapper.querySelector('.canvas');
-  if(canvas){const observer=new MutationObserver(()=>this.project());observer.observe(canvas,{attributes:true,attributeFilter:['style']});this.restore=()=>observer.disconnect();}
-  wrapper.addEventListener('pointerdown',this.startDrag,true);this.resize=new ResizeObserver(this.schedule);this.resize.observe(wrapper);
+  if(canvas){const observer=new MutationObserver(()=>this.project());observer.observe(canvas,{childList:true});this.restore=()=>observer.disconnect();}
+  this.resize=new ResizeObserver(this.schedule);this.resize.observe(wrapper);
  }
- private startDrag=(e:PointerEvent)=>{
-  if(e.button!==0||!e.ctrlKey||!e.shiftKey||e.altKey||!this.available()||(e.target as HTMLElement).closest('input,textarea,[contenteditable="true"],.canvas-controls'))return;
-  const wrapper=this.wrapper,start=this.p.adapter.toCanvas(e),path=this.path;if(!wrapper||!start)return;
-  e.preventDefault();e.stopImmediatePropagation();this.cancelDrag?.();
-  const ghost=wrapper.createDiv({cls:'co-vg-ghost'});let rect:Omit<Area,'id'|'name'>|null=null;
-  wrapper.setPointerCapture(e.pointerId);
-  const move=(ev:PointerEvent)=>{const end=this.p.adapter.toCanvas(ev),c=this.p.adapter.canvas,b=c?.getViewportBBox?.();if(!end||!b)return;rect={x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y)};const z=2**c.zoom;Object.assign(ghost.style,{left:(rect.x-b.minX)*z+'px',top:(rect.y-b.minY)*z+'px',width:rect.width*z+'px',height:rect.height*z+'px'});};
-  const cancel=()=>{ghost.remove();wrapper.removeEventListener('pointermove',move);wrapper.removeEventListener('pointerup',up);wrapper.removeEventListener('pointercancel',cancel);document.removeEventListener('keydown',key,true);if(wrapper.hasPointerCapture(e.pointerId))wrapper.releasePointerCapture(e.pointerId);this.cancelDrag=null;};
-  const key=(ev:KeyboardEvent)=>{if(ev.key==='Escape'){ev.preventDefault();ev.stopImmediatePropagation();cancel();}};
-  const up=(ev:PointerEvent)=>{move(ev);const result=rect;cancel();if(!result||result.width<20||result.height<20||this.path!==path)return;const m=new Menu();m.addItem(i=>i.setTitle('Presentation Group 추가').setIcon('presentation').onClick(()=>{if(this.path===path)this.p.presentation.createArea(result);}));m.addItem(i=>i.setTitle('Vision Group 만들기').setIcon(VISION_ICON).onClick(()=>{if(this.path===path)this.create(result);}));m.showAtMouseEvent(ev);};
-  this.cancelDrag=cancel;wrapper.addEventListener('pointermove',move);wrapper.addEventListener('pointerup',up);wrapper.addEventListener('pointercancel',cancel);document.addEventListener('keydown',key,true);
- };
- private detach(){this.cancelDrag?.();this.restore?.();this.restore=null;this.resize?.disconnect();this.resize=null;this.wrapper?.removeEventListener('pointerdown',this.startDrag,true);this.toolbar?.remove();this.toolbar=null;this.layer?.remove();this.layer=null;cancelAnimationFrame(this.frame);this.frame=0;this.signature='';this.wrapper=null;}
+ private detach(){this.nativeRestore?.();this.nativeRestore=null;this.nativeActionPath='';this.restore?.();this.restore=null;this.resize?.disconnect();this.resize=null;this.toolbar?.remove();this.toolbar=null;cancelAnimationFrame(this.frame);this.frame=0;this.wrapper=null;}
 }

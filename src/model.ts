@@ -3,7 +3,7 @@ export interface CanvasDocument {canvasOutliner?:{version:1;id:string};nodes:Can
 export interface Ref {kind:'node'|'collection';id:string}
 export interface Collection {id:string;name:string;parent:string|null;refs:Ref[]}
 export interface Metadata {created:number|null;updated:number|null;signature:string;order:number;name?:string;fileSignature?:string}
-export interface Area {id:string;name:string;x:number;y:number;width:number;height:number}
+export interface Area {native?:boolean;id:string;name:string;x:number;y:number;width:number;height:number}
 export interface Step {id:string;kind:'node'|'area';target:string}
 export type SortMode='name'|'created'|'updated'|'size'|'custom';
 export interface CanvasState {identity?:string;visionGroups?:Area[];registered:string[];collections:Collection[];meta:Record<string,Metadata>;custom:Record<string,string[]>;steps:Step[];areas:Area[];current:string|null;presentation:boolean;snapshot:CanvasDocument|null}
@@ -25,7 +25,7 @@ export function sync(state:CanvasState,doc:CanvasDocument,now=Date.now()){
 }
 export function purgeMissing(s:CanvasState){const ids=new Set(s.snapshot?.nodes.map(x=>x.id)||[]);s.registered=s.registered.filter(x=>ids.has(x));for(const c of s.collections)c.refs=c.refs.filter(x=>x.kind!=='node'||ids.has(x.id));s.steps=s.steps.filter(x=>x.kind!=='node'||ids.has(x.target));for(const id of Object.keys(s.meta))if(!ids.has(id))delete s.meta[id];if(!s.steps.some(x=>x.id===s.current))s.current=s.steps[0]?.id??null;}
 export function hierarchy(doc:CanvasDocument,s:CanvasState){
-  const groups=doc.nodes.filter(n=>n.type==='group');const parents=new Map<string,string|null>();
+  const groups=doc.nodes.filter(n=>n.type==='group'&&!s.visionGroups?.some(a=>a.id===n.id));const parents=new Map<string,string|null>();
   const choose=(list:CanvasNode[])=>list.sort((a,b)=>area(a)-area(b)||(s.meta[b.id]?.order??0)-(s.meta[a.id]?.order??0))[0]?.id??null;
   for(const n of doc.nodes){let candidates=groups.filter(g=>g.id!==n.id&&contains(g,n));if(n.type==='group')candidates=candidates.filter(g=>area(g)>area(n));parents.set(n.id,choose(candidates));}
   const counts=new Map(groups.map(g=>[g.id,0]));
