@@ -29,3 +29,20 @@ test('Native group position and label become the saved Vision Group information'
  owner.syncNative();
  assert.deepEqual({x:a.x,y:a.y,width:a.width,height:a.height,name:a.name},{x:50,y:-25,width:500,height:250,name:'변경'});
 });
+test('Vision Group drag excludes implicit contents while ordinary group drag retains them',()=>{
+ const {independentVisionDrag}=module.exports,box={minX:0,minY:0,maxX:300,maxY:200};
+ const vg={id:'vg',getData:()=>({type:'group'}),getBBox:()=>box},normal={...vg,id:'normal'},card={id:'card'};
+ const get=function(){assert.equal(this,c);return [card]},c={selection:new Set([vg]),getContainingNodes:get};
+ assert.deepEqual(independentVisionDrag(c,new Set(['vg']),()=>Array.from(c.getContainingNodes(box))),[]);
+ assert.equal(c.getContainingNodes,get);
+ c.selection=new Set([normal]);
+ assert.equal(independentVisionDrag(c,new Set(['vg']),()=>c.getContainingNodes(box))[0],card);
+ c.selection=new Set([vg,normal]);
+ assert.equal(independentVisionDrag(c,new Set(['vg']),()=>c.getContainingNodes(box))[0],card);
+});
+test('Drag starts from an unselected Vision Group and restores containment after failure',()=>{
+ const {independentVisionDrag}=module.exports,box={minX:0,minY:0,maxX:100,maxY:100};
+ const vg={id:'vg',getData:()=>({type:'group'}),getBBox:()=>box},original=()=>['card'],c={selection:new Set(),getContainingNodes:original};
+ assert.throws(()=>independentVisionDrag(c,new Set(['vg']),()=>{assert.equal(c.getContainingNodes(box).length,0);throw Error('native failure');},vg),/native failure/);
+ assert.equal(c.getContainingNodes,original);
+});

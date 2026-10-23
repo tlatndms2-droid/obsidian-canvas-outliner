@@ -10,6 +10,19 @@ export function creationBounds(selected:Omit<Area,'id'|'name'>[],viewport:Omit<A
  return{x,y,width:Math.max(...selected.map(n=>n.x+n.width))-x,height:Math.max(...selected.map(n=>n.y+n.height))-y};
 }
 
+/** Native drag gathers contents synchronously. VG groups contribute only themselves. */
+export function independentVisionDrag(canvas:any,visionIds:Set<string>,action:()=>any,node?:any){
+ const selected=node&&!canvas.selection.has(node)?[node]:[...canvas.selection];
+ const groups=selected.filter(n=>n.getData?.().type==='group');
+ const original=canvas.getContainingNodes;
+ canvas.getContainingNodes=function(box:any){
+  const matching=groups.filter(n=>{const b=n.getBBox();return b.minX===box.minX&&b.minY===box.minY&&b.maxX===box.maxX&&b.maxY===box.maxY;});
+  if(matching.length&&matching.every(n=>visionIds.has(n.id)))return [];
+  return original.call(this,box);
+ };
+ try{return action();}finally{canvas.getContainingNodes=original;}
+}
+
 /** Native Canvas groups with an independent Outliner identity and visibility. */
 export class VisionGroups {
  private wrapper:HTMLElement|null=null;
@@ -84,13 +97,15 @@ export class VisionGroups {
  private schedule=()=>{if(!this.frame)this.frame=requestAnimationFrame(()=>{this.frame=0;this.project();});};
  private project(){this.syncNative();}
  private attach(wrapper:HTMLElement){
-  const c=this.p.adapter.canvas,owner=this,update=c.updateSelection,hit=c.hitTestNode,intersect=c.getIntersectingNodes;
+  const c=this.p.adapter.canvas,owner=this,update=c.updateSelection,hit=c.hitTestNode,intersect=c.getIntersectingNodes,drag=c.handleSelectionDrag;
   const hidden=(node:any)=>!owner.visible&&owner.p.state()?.visionGroups?.some(a=>a.id===node.id);
   const selection=function(this:any,fn:()=>void){return update.call(this,()=>{fn();for(const n of this.selection)if(hidden(n))this.selection.delete(n);});};
   const intersections=function(this:any,...args:any[]){return intersect.apply(this,args).filter((n:any)=>!hidden(n));};
   const hitTest=function(this:any,pos:{x:number;y:number},padding=0){const n=hit.call(this,pos,padding);if(!n||!hidden(n))return n;return intersections.call(this,{minX:pos.x-padding,minY:pos.y-padding,maxX:pos.x+padding,maxY:pos.y+padding}).sort((a:any,b:any)=>b.zIndex-a.zIndex)[0]??null;};
   c.updateSelection=selection;c.getIntersectingNodes=intersections;c.hitTestNode=hitTest;
-  this.nativeRestore=()=>{if(c.updateSelection===selection)c.updateSelection=update;if(c.getIntersectingNodes===intersections)c.getIntersectingNodes=intersect;if(c.hitTestNode===hitTest)c.hitTestNode=hit;};
+  const independentDrag=function(this:any,...args:any[]){return independentVisionDrag(this,new Set((owner.p.state()?.visionGroups??[]).map(a=>a.id)),()=>drag.apply(this,args),args[2]);};
+  c.handleSelectionDrag=independentDrag;
+  this.nativeRestore=()=>{if(c.updateSelection===selection)c.updateSelection=update;if(c.getIntersectingNodes===intersections)c.getIntersectingNodes=intersect;if(c.hitTestNode===hitTest)c.hitTestNode=hit;if(c.handleSelectionDrag===independentDrag)c.handleSelectionDrag=drag;};
   const group=wrapper.querySelector('.canvas-controls');if(group){this.toolbar=group.createEl('button',{cls:'canvas-control-item co-vg-toggle',attr:{'aria-label':'Vision Group 표시 전환','data-tooltip-position':'left'}});this.toolbar.onclick=()=>this.toggle();}
   const canvas=wrapper.querySelector('.canvas');
   if(canvas){const observer=new MutationObserver(()=>this.project());observer.observe(canvas,{childList:true});this.restore=()=>observer.disconnect();}
